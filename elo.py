@@ -12,7 +12,7 @@ def get_gs_conn():
     return st.connection("gsheets", type=GSheetsConnection)
 conn = get_gs_conn()
 
-@st.cache_data(ttl=3600) # 1h
+@st.cache_data(ttl='1h')
 def compute_elo():
 
     # Get battle reports
@@ -72,15 +72,22 @@ def compute_elo():
     # Get game counts
     gcounts = pd.concat([df['Mängija A'],df['Mängija B']]).value_counts()
 
+    # Get wins/ties/losses
+    wins = pd.concat([df[df['SKOOR_A']==1]['Mängija A'],df[df['SKOOR_B']==1]['Mängija B']]).value_counts()
+    losses = pd.concat([df[df['SKOOR_A']==0]['Mängija A'],df[df['SKOOR_B']==0]['Mängija B']]).value_counts()
+    ties = pd.concat([df[df['SKOOR_A']==0.5]['Mängija A'],df[df['SKOOR_B']==0.5]['Mängija B']]).value_counts()
+    wltdf = pd.DataFrame({'w':wins, 'l':losses, 't':ties}).fillna(0).astype('int')
+
     # Compile a result dataframe
-    res_df = pd.DataFrame({'ELO':ranking.round(0).astype('int'),'games':gcounts}).sort_values('ELO',ascending=False)
+    res_df = pd.DataFrame({'ELO':ranking.round(0).astype('int'),'Games':gcounts, 
+                            'Wins': wltdf['w'], 'Losses': wltdf['l'], 'Ties':wltdf['t']}).sort_values('ELO',ascending=False)
     res_df['Username'] = res_df.index
 
     return res_df
 
 res_df = compute_elo()
 
-@st.cache_data(ttl=300) # 5 min
+@st.cache_data(ttl='1min')
 def fetch_public():
     return list(conn.read(worksheet="Public",spreadsheet=reports_sheet_url)['Username'].str.lower())
 
@@ -88,8 +95,16 @@ def fetch_public():
 public = fetch_public()
 
 #public = [p['Username'].lower() for p in sh.worksheet('Public').get_all_records()]
+total_games = res_df['Games'].sum()//2
+res_df = res_df[res_df.index.isin(public) | (res_df['Games']>=3)]
 res_df.loc[~res_df.index.isin(public),'Username'] = '-'
-res_df.loc[~res_df.index.isin(public) & (res_df['games']>=5),'games'] = '5+'
+res_df.loc[~res_df.index.isin(public) & (res_df['Games']>=5),'Games'] = '5+'
+res_df.loc[~res_df.index.isin(public),['Wins','Losses','Ties']] = ''
 res_df.index = range(1,len(res_df)+1)
 
-st.dataframe(res_df[['Username','games','ELO']],use_container_width=True,height=len(res_df)*36)
+st.markdown(f'''
+# Adeptus Estonicus W40k ranking
+Based on 52 games scraped by Metsawend from #lahingumöllud + {total_games-52} games reported [here](https://forms.gle/43u8m5WSsJhqFrbJ8)  
+PM *@velochy2* (Margus) in Discord if you want your name visible
+''')
+st.dataframe(res_df[['Username','Games','Wins','Losses','Ties','ELO']],use_container_width=True,height=50+len(res_df)*35)
