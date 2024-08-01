@@ -4,3 +4,4 @@ streamlit
 pandas
 numpy
 st-gsheets-connection 
+textdistance

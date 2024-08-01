@@ -6,24 +6,24 @@ from streamlit_gsheets import GSheetsConnection
 
 reports_sheet_url = "https://docs.google.com/spreadsheets/d/1STDQHopa5_gagC4q4iHe2vku-YQvVROxOa89dOrBgJc/edit?usp=sharing"
 
+is_admin = (st.query_params.get('admin') == st.secrets['admin_password'])
+
 # Create a connection object.
 @st.cache_resource
 def get_gs_conn():
     return st.connection("gsheets", type=GSheetsConnection)
 conn = get_gs_conn()
 
-@st.cache_data(ttl='1h')
-def compute_elo():
-
+def get_result_data():
     # Get battle reports
     frdf = conn.read(worksheet="Responses",spreadsheet=reports_sheet_url)
-    rdf = frdf[['Sinu kasutajanimi', 'Vastase kasutajanimi', 'Kes võitis?']]
-    rdf.columns = ['Mängija A','Mängija B','Tulemus']
+    rdf = frdf[['Sinu kasutajanimi', 'Vastase kasutajanimi', 'Kes võitis?', 'Millal mäng toimus?']]
+    rdf.columns = ['Mängija A','Mängija B','Tulemus','Toimumisaeg']
+    rdf['Toimumisaeg'] = pd.to_datetime(rdf['Toimumisaeg'])
     rdf = rdf[rdf['Tulemus'].isin(['Vastane','Viik','Mina'])]
     rdf['SKOOR_A'] = rdf['Tulemus'].replace({'Vastane':0,'Viik':0.5,'Mina':1}).astype('float')
     rdf['SKOOR_B'] = rdf['Tulemus'].replace({'Vastane':1,'Viik':0.5,'Mina':0}).astype('float')
-    rdf.drop(columns=['Tulemus'],inplace=True)
-    df = rdf
+    df = rdf.drop(columns=['Tulemus'])
 
     # Convert usernames to lowercase
     df['Mängija A'] = df['Mängija A'].str.strip().str.lower()
@@ -34,6 +34,13 @@ def compute_elo():
     #aliases = sh.worksheet('Aliases').get_all_records()
     amap = { v['Alias'].lower(): v['Username'].lower() for i,v in aliases.iterrows()}
     df[['Mängija A','Mängija B']] = df[['Mängija A','Mängija B']].replace(amap)
+
+    return df
+
+@st.cache_data(ttl='1h')
+def compute_elo():
+    df = get_result_data()
+
 
     # Create a list of all usernames
     players = list(set(df['Mängija A'].unique()) | set(df['Mängija B']))
@@ -86,25 +93,69 @@ def compute_elo():
     return res_df
 
 res_df = compute_elo()
+total_games = res_df['Games'].sum()//2
 
 @st.cache_data(ttl='1min')
 def fetch_public():
-    return list(conn.read(worksheet="Public",spreadsheet=reports_sheet_url)['Username'].str.lower())
+    return list(conn.read(worksheet="Public",spreadsheet=reports_sheet_url)['Username'])
 
 # Filter only those that have given permission
-public = fetch_public()
+public = { u.lower(): u for u in fetch_public() }
 
-#public = [p['Username'].lower() for p in sh.worksheet('Public').get_all_records()]
-total_games = res_df['Games'].sum()//2
-res_df = res_df[res_df.index.isin(public) | (res_df['Games']>=3)]
-res_df.loc[~res_df.index.isin(public),'Username'] = '-'
-res_df.loc[~res_df.index.isin(public) & (res_df['Games']>=5),'Games'] = '5+'
-res_df.loc[~res_df.index.isin(public),['Wins','Losses','Ties']] = ''
+if not is_admin: # For regular users, show only public usernames
+    res_df = res_df[res_df.index.isin(public) | (res_df['Games']>=3)]
+    res_df.loc[~res_df.index.isin(public),'Username'] = '-'
+    res_df.loc[~res_df.index.isin(public) & (res_df['Games']>=5),'Games'] = '5+'
+    res_df.loc[~res_df.index.isin(public),['Wins','Losses','Ties']] = ''
+    res_df = res_df[['Username','Games','Wins','Losses','Ties','ELO']]
+else: # For admins, show unfiltered full list
+    res_df['Public'] = res_df.index.isin(public)
+    res_df = res_df[['Public','Username','Games','Wins','Losses','Ties','ELO']]
+
 res_df.index = range(1,len(res_df)+1)
+res_df['Username'] = res_df['Username'].replace(public)
 
 st.markdown(f'''
 # Adeptus Estonicus W40k ranking
 Based on 52 games scraped by Metsawend from #lahingumöllud + {total_games-52} games reported [here](https://forms.gle/43u8m5WSsJhqFrbJ8)  
 PM *@velochy2* (Margus) in Discord if you want your name visible
 ''')
-st.dataframe(res_df[['Username','Games','Wins','Losses','Ties','ELO']],use_container_width=True,height=50+len(res_df)*35)
+
+# Add some admin tools to help manage the spreadsheet
+if is_admin:
+    st.header("Admin tools")
+    st.markdown(f"[Link to spreadsheet]({reports_sheet_url})")
+
+    if st.button("Force recompute"):
+        st.cache_data.clear()
+    
+    st.header("Full ranking")
+
+st.dataframe(res_df,use_container_width=True,height=50+len(res_df)*35)
+
+if is_admin:
+    st.header("Duplicate games")
+    from collections import defaultdict
+    rdf = get_result_data()
+    games, row_ids = defaultdict(list), defaultdict(list) 
+    for i,r in rdf.iterrows():
+        pt = tuple({r['Mängija A'],r['Mängija B']}) # This makes sure the pair is always ordered same way
+        p1s = r['SKOOR_A'] if pt[0]==r['Mängija A'] else r['SKOOR_B'] # Score of the first player in tuple
+        games[pt + (p1s,)].append(r['Toimumisaeg'])
+        row_ids[pt + (p1s,)].append(i+2)
+
+    for k,l in games.items():
+        if len(l)<=1: continue
+        l = list(pd.Series(l).sort_values())
+        for i, v in enumerate(l[:-1]):
+            if (l[i+1]-v)<=pd.Timedelta('2d'):
+                st.write("Potential duplicate: ",k, row_ids[k][i],v, row_ids[k][i+1],v)
+        #st.write(k,l)
+
+    st.header("Most similar usernames")
+    from itertools import combinations
+    from textdistance import strcmp95
+    new_df = pd.DataFrame(combinations(res_df['Username'], 2), columns=["id1","id2"])
+    new_df["EDist"] = new_df.apply(lambda x: strcmp95(x[0].lower(),x[1].lower()), axis=1)
+    st.dataframe(new_df.sort_values('EDist',ascending=False))
+
