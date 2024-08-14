@@ -14,11 +14,12 @@ def get_gs_conn():
     return st.connection("gsheets", type=GSheetsConnection)
 conn = get_gs_conn()
 
+@st.cache_data(ttl='10min')
 def get_result_data():
     # Get battle reports
     frdf = conn.read(worksheet="Responses",spreadsheet=reports_sheet_url)
-    rdf = frdf[['Sinu kasutajanimi', 'Vastase kasutajanimi', 'Kes võitis?', 'Millal mäng toimus?']]
-    rdf.columns = ['Mängija A','Mängija B','Tulemus','Toimumisaeg']
+    rdf = frdf[['Sinu kasutajanimi', 'Vastase kasutajanimi', 'Kes võitis?', 'Millal mäng toimus?','Formaat']]
+    rdf.columns = ['Mängija A','Mängija B','Tulemus','Toimumisaeg','Formaat']
     rdf['Toimumisaeg'] = pd.to_datetime(rdf['Toimumisaeg'])
     rdf = rdf[rdf['Tulemus'].isin(['Vastane','Viik','Mina'])]
     rdf['SKOOR_A'] = rdf['Tulemus'].replace({'Vastane':0,'Viik':0.5,'Mina':1}).astype('float')
@@ -38,9 +39,12 @@ def get_result_data():
     return df
 
 @st.cache_data(ttl='1h')
-def compute_elo():
+def compute_elo(game_type):
     df = get_result_data()
 
+    if game_type!=None:
+        df = df[df['Formaat']==game_type]
+    df = df.drop(columns=['Formaat'])
 
     # Create a list of all usernames
     players = list(set(df['Mängija A'].unique()) | set(df['Mängija B']))
@@ -92,8 +96,6 @@ def compute_elo():
 
     return res_df
 
-res_df = compute_elo()
-total_games = res_df['Games'].sum()//2
 
 @st.cache_data(ttl='1min')
 def fetch_public():
@@ -102,60 +104,68 @@ def fetch_public():
 # Filter only those that have given permission
 public = { u.lower(): u for u in fetch_public() }
 
-if not is_admin: # For regular users, show only public usernames
-    res_df = res_df[res_df.index.isin(public) | (res_df['Games']>=3)]
-    res_df.loc[~res_df.index.isin(public),'Username'] = '-'
-    res_df.loc[~res_df.index.isin(public) & (res_df['Games']>=5),'Games'] = '5+'
-    res_df.loc[~res_df.index.isin(public),['Wins','Losses','Ties']] = ''
-    res_df = res_df[['Username','Games','Wins','Losses','Ties','ELO']]
-else: # For admins, show unfiltered full list
-    res_df['Public'] = res_df.index.isin(public)
-    res_df = res_df[['Public','Username','Games','Wins','Losses','Ties','ELO']]
+formats = [None, '2000 pts'] if not is_admin else [None]
 
-res_df.index = range(1,len(res_df)+1)
-res_df['Username'] = res_df['Username'].replace(public)
+tabs = st.tabs([ f if f is not None else 'Kõik' for f in formats])
 
-st.markdown(f'''
-# Adeptus Estonicus W40k ranking
-Based on 52 games scraped by Metsawend from #lahingumöllud + {total_games-52} games reported [here](https://forms.gle/43u8m5WSsJhqFrbJ8)  
-PM *@velochy2* (Margus) in Discord if you want your name visible
-''')
+for ti, stt in enumerate(tabs):
+    res_df = compute_elo(formats[ti])
+    total_games = res_df['Games'].sum()//2
 
-# Add some admin tools to help manage the spreadsheet
-if is_admin:
-    st.header("Admin tools")
-    st.markdown(f"[Link to spreadsheet]({reports_sheet_url})")
+    if not is_admin: # For regular users, show only public usernames
+        res_df = res_df[res_df.index.isin(public) | (res_df['Games']>=3)]
+        res_df.loc[~res_df.index.isin(public),'Username'] = '-'
+        res_df.loc[~res_df.index.isin(public) & (res_df['Games']>=5),'Games'] = '5+'
+        res_df.loc[~res_df.index.isin(public),['Wins','Losses','Ties']] = ''
+        res_df = res_df[['Username','Games','Wins','Losses','Ties','ELO']]
+    else: # For admins, show unfiltered full list
+        res_df['Public'] = res_df.index.isin(public)
+        res_df = res_df[['Public','Username','Games','Wins','Losses','Ties','ELO']]
 
-    if st.button("Force recompute"):
-        st.cache_data.clear()
-    
-    st.header("Full ranking")
+    res_df.index = range(1,len(res_df)+1)
+    res_df['Username'] = res_df['Username'].replace(public)
 
-st.dataframe(res_df,use_container_width=True,height=50+len(res_df)*35)
+    stt.markdown(f'''
+    # Adeptus Estonicus W40k ranking
+    Based on {total_games}, mostly those reported [here](https://forms.gle/43u8m5WSsJhqFrbJ8).  
+    PM *@velochy2* (Margus) in Discord if you want your name visible
+    ''')
 
-if is_admin:
-    st.header("Duplicate games")
-    from collections import defaultdict
-    rdf = get_result_data()
-    games, row_ids = defaultdict(list), defaultdict(list) 
-    for i,r in rdf.iterrows():
-        pt = tuple({r['Mängija A'],r['Mängija B']}) # This makes sure the pair is always ordered same way
-        p1s = r['SKOOR_A'] if pt[0]==r['Mängija A'] else r['SKOOR_B'] # Score of the first player in tuple
-        games[pt + (p1s,)].append(r['Toimumisaeg'])
-        row_ids[pt + (p1s,)].append(i+2)
+    # Add some admin tools to help manage the spreadsheet
+    if is_admin:
+        stt.header("Admin tools")
+        stt.markdown(f"[Link to spreadsheet]({reports_sheet_url})")
 
-    for k,l in games.items():
-        if len(l)<=1: continue
-        l = list(pd.Series(l).sort_values())
-        for i, v in enumerate(l[:-1]):
-            if (l[i+1]-v)<=pd.Timedelta('2d'):
-                st.write("Potential duplicate: ",k, row_ids[k][i],v, row_ids[k][i+1],v)
-        #st.write(k,l)
+        if stt.button("Force recompute"):
+            stt.cache_data.clear()
+        
+        stt.header("Full ranking")
 
-    st.header("Most similar usernames")
-    from itertools import combinations
-    from textdistance import strcmp95
-    new_df = pd.DataFrame(combinations(res_df['Username'], 2), columns=["id1","id2"])
-    new_df["EDist"] = new_df.apply(lambda x: strcmp95(x[0].lower(),x[1].lower()), axis=1)
-    st.dataframe(new_df.sort_values('EDist',ascending=False))
+    stt.dataframe(res_df,use_container_width=True,height=50+len(res_df)*35)
+
+    if is_admin:
+        stt.header("Duplicate games")
+        from collections import defaultdict
+        rdf = get_result_data()
+        games, row_ids = defaultdict(list), defaultdict(list) 
+        for i,r in rdf.iterrows():
+            pt = tuple({r['Mängija A'],r['Mängija B']}) # This makes sure the pair is always ordered same way
+            p1s = r['SKOOR_A'] if pt[0]==r['Mängija A'] else r['SKOOR_B'] # Score of the first player in tuple
+            games[pt + (p1s,)].append(r['Toimumisaeg'])
+            row_ids[pt + (p1s,)].append(i+2)
+
+        for k,l in games.items():
+            if len(l)<=1: continue
+            l = list(pd.Series(l).sort_values())
+            for i, v in enumerate(l[:-1]):
+                if (l[i+1]-v)<=pd.Timedelta('2d'):
+                    stt.write("Potential duplicate: ",k, row_ids[k][i],v, row_ids[k][i+1],v)
+            #st.write(k,l)
+
+        stt.header("Most similar usernames")
+        from itertools import combinations
+        from textdistance import strcmp95
+        new_df = pd.DataFrame(combinations(res_df['Username'], 2), columns=["id1","id2"])
+        new_df["EDist"] = new_df.apply(lambda x: strcmp95(x[0].lower(),x[1].lower()), axis=1)
+        stt.dataframe(new_df.sort_values('EDist',ascending=False))
 
