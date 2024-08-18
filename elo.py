@@ -20,7 +20,7 @@ def get_result_data():
     frdf = conn.read(worksheet="Responses",spreadsheet=reports_sheet_url)
     rdf = frdf[['Sinu kasutajanimi', 'Vastase kasutajanimi', 'Kes võitis?', 'Millal mäng toimus?','Formaat']]
     rdf.columns = ['Mängija A','Mängija B','Tulemus','Toimumisaeg','Formaat']
-    rdf['Toimumisaeg'] = pd.to_datetime(rdf['Toimumisaeg'])
+    rdf['Toimumisaeg'] = pd.to_datetime(rdf['Toimumisaeg'],format='mixed')
     rdf = rdf[rdf['Tulemus'].isin(['Vastane','Viik','Mina'])]
     rdf['SKOOR_A'] = rdf['Tulemus'].replace({'Vastane':0,'Viik':0.5,'Mina':1}).astype('float')
     rdf['SKOOR_B'] = rdf['Tulemus'].replace({'Vastane':1,'Viik':0.5,'Mina':0}).astype('float')
@@ -127,7 +127,7 @@ for ti, stt in enumerate(tabs):
 
     stt.markdown(f'''
     # Adeptus Estonicus W40k ranking
-    Based on {total_games}, mostly those reported [here](https://forms.gle/43u8m5WSsJhqFrbJ8).  
+    Based on {total_games} games, mostly those reported [here](https://forms.gle/43u8m5WSsJhqFrbJ8).  
     PM *@velochy2* (Margus) in Discord if you want your name visible
     ''')
 

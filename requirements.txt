@@ -1,7 +1,7 @@
-streamlit==1.36.0
+streamlit==1.37.0
 pymc
 streamlit
 pandas
 numpy
-st-gsheets-connection 
+git+https://github.com/streamlit/gsheets-connection
 textdistance
