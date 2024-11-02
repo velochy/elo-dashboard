@@ -18,23 +18,23 @@ conn = get_gs_conn()
 def get_result_data():
     # Get battle reports
     frdf = conn.read(worksheet="Responses",spreadsheet=reports_sheet_url)
-    rdf = frdf[['Sinu kasutajanimi', 'Vastase kasutajanimi', 'Kes võitis?', 'Millal mäng toimus?','Formaat']]
-    rdf.columns = ['Mängija A','Mängija B','Tulemus','Toimumisaeg','Formaat']
-    rdf['Toimumisaeg'] = pd.to_datetime(rdf['Toimumisaeg'],format='mixed')
-    rdf = rdf[rdf['Tulemus'].isin(['Vastane','Viik','Mina'])]
-    rdf['SKOOR_A'] = rdf['Tulemus'].replace({'Vastane':0,'Viik':0.5,'Mina':1}).astype('float')
-    rdf['SKOOR_B'] = rdf['Tulemus'].replace({'Vastane':1,'Viik':0.5,'Mina':0}).astype('float')
-    df = rdf.drop(columns=['Tulemus'])
+    rdf = frdf[['Your username', 'Opponent username', 'Who won?', 'When did the game take place?','Format']]
+    rdf.columns = ['Player 1','Player 2','Result','Time','Format']
+    rdf['Time'] = pd.to_datetime(rdf['Time'],format='mixed')
+    rdf = rdf[rdf['Result'].isin(['Opponent','Tie','Me'])]
+    rdf['SKOOR_A'] = rdf['Result'].replace({'Opponent':0,'Tie':0.5,'Me':1}).astype('float')
+    rdf['SKOOR_B'] = rdf['Result'].replace({'Opponent':1,'Tie':0.5,'Me':0}).astype('float')
+    df = rdf.drop(columns=['Result'])
 
     # Convert usernames to lowercase
-    df['Mängija A'] = df['Mängija A'].str.strip().str.lower()
-    df['Mängija B'] = df['Mängija B'].str.strip().str.lower()
+    df['Player 1'] = df['Player 1'].str.strip().str.lower()
+    df['Player 2'] = df['Player 2'].str.strip().str.lower()
 
     # Replace aliases
     aliases = conn.read(worksheet="Aliases",spreadsheet=reports_sheet_url)
     #aliases = sh.worksheet('Aliases').get_all_records()
     amap = { v['Alias'].lower(): v['Username'].lower() for i,v in aliases.iterrows()}
-    df[['Mängija A','Mängija B']] = df[['Mängija A','Mängija B']].replace(amap)
+    df[['Player 1','Player 2']] = df[['Player 1','Player 2']].replace(amap)
 
     return df
 
@@ -43,15 +43,15 @@ def compute_elo(game_type):
     df = get_result_data()
 
     if game_type!=None:
-        df = df[df['Formaat']==game_type]
-    df = df.drop(columns=['Formaat'])
+        df = df[df['Format']==game_type]
+    df = df.drop(columns=['Format'])
 
     # Create a list of all usernames
-    players = list(set(df['Mängija A'].unique()) | set(df['Mängija B']))
+    players = list(set(df['Player 1'].unique()) | set(df['Player 2']))
 
     # Convert usernames to indices for model
-    p1i = df['Mängija A'].apply(lambda p: players.index(p))
-    p2i = df['Mängija B'].apply(lambda p: players.index(p))
+    p1i = df['Player 1'].apply(lambda p: players.index(p))
+    p2i = df['Player 2'].apply(lambda p: players.index(p))
 
     # Convert scores to integers (0/0.5/1 to 0/1/2)
     p1r = (df['SKOOR_A']*2).astype('int')
@@ -81,12 +81,12 @@ def compute_elo(game_type):
     ranking = pd.Series(mres['elos'],index=players).sort_values()
 
     # Get game counts
-    gcounts = pd.concat([df['Mängija A'],df['Mängija B']]).value_counts()
+    gcounts = pd.concat([df['Player 1'],df['Player 2']]).value_counts()
 
     # Get wins/ties/losses
-    wins = pd.concat([df[df['SKOOR_A']==1]['Mängija A'],df[df['SKOOR_B']==1]['Mängija B']]).value_counts()
-    losses = pd.concat([df[df['SKOOR_A']==0]['Mängija A'],df[df['SKOOR_B']==0]['Mängija B']]).value_counts()
-    ties = pd.concat([df[df['SKOOR_A']==0.5]['Mängija A'],df[df['SKOOR_B']==0.5]['Mängija B']]).value_counts()
+    wins = pd.concat([df[df['SKOOR_A']==1]['Player 1'],df[df['SKOOR_B']==1]['Player 2']]).value_counts()
+    losses = pd.concat([df[df['SKOOR_A']==0]['Player 1'],df[df['SKOOR_B']==0]['Player 2']]).value_counts()
+    ties = pd.concat([df[df['SKOOR_A']==0.5]['Player 1'],df[df['SKOOR_B']==0.5]['Player 2']]).value_counts()
     wltdf = pd.DataFrame({'w':wins, 'l':losses, 't':ties}).fillna(0).astype('int')
 
     # Compile a result dataframe
@@ -137,7 +137,7 @@ for ti, stt in enumerate(tabs):
         stt.markdown(f"[Link to spreadsheet]({reports_sheet_url})")
 
         if stt.button("Force recompute"):
-            stt.cache_data.clear()
+            st.cache_data.clear()
         
         stt.header("Full ranking")
 
@@ -149,9 +149,9 @@ for ti, stt in enumerate(tabs):
         rdf = get_result_data()
         games, row_ids = defaultdict(list), defaultdict(list) 
         for i,r in rdf.iterrows():
-            pt = tuple({r['Mängija A'],r['Mängija B']}) # This makes sure the pair is always ordered same way
-            p1s = r['SKOOR_A'] if pt[0]==r['Mängija A'] else r['SKOOR_B'] # Score of the first player in tuple
-            games[pt + (p1s,)].append(r['Toimumisaeg'])
+            pt = tuple({r['Player 1'],r['Player 2']}) # This makes sure the pair is always ordered same way
+            p1s = r['SKOOR_A'] if pt[0]==r['Player 1'] else r['SKOOR_B'] # Score of the first player in tuple
+            games[pt + (p1s,)].append(r['Time'])
             row_ids[pt + (p1s,)].append(i+2)
 
         for k,l in games.items():
@@ -159,7 +159,7 @@ for ti, stt in enumerate(tabs):
             l = list(pd.Series(l).sort_values())
             for i, v in enumerate(l[:-1]):
                 if (l[i+1]-v)<=pd.Timedelta('2d'):
-                    stt.write("Potential duplicate: ",k, row_ids[k][i],v, row_ids[k][i+1],v)
+                    stt.write(f"Potential duplicate: {k}, {row_ids[k][i]}, {v}, {row_ids[k][i+1]}")
             #st.write(k,l)
 
         stt.header("Most similar usernames")
@@ -167,5 +167,5 @@ for ti, stt in enumerate(tabs):
         from textdistance import strcmp95
         new_df = pd.DataFrame(combinations(res_df['Username'], 2), columns=["id1","id2"])
         new_df["EDist"] = new_df.apply(lambda x: strcmp95(x[0].lower(),x[1].lower()), axis=1)
-        stt.dataframe(new_df.sort_values('EDist',ascending=False))
+        stt.dataframe(new_df.sort_values('EDist',ascending=False)[:30])
 
